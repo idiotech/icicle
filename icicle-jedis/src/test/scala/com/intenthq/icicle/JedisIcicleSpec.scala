@@ -4,121 +4,88 @@ import java.util
 import java.util.Optional
 
 import _root_.redis.clients.jedis.exceptions.JedisDataException
-import _root_.redis.clients.jedis.{Jedis, JedisPool}
+import _root_.redis.clients.jedis.JedisCluster
 import com.intenthq.icicle.redis.IcicleRedisResponse
 import org.specs2.matcher.ThrownExpectations
 import org.specs2.mock.Mockito
 import org.specs2.mutable._
 import org.specs2.specification.Scope
 
-object JedisIcicleSpec extends Specification {
+object JedisIcicleSpec extends Specification  {
   val luaScript = "foo"
   val sha = "abcdef1234567890"
 
   "constructor" should {
     "throw a InvalidServerFormatException exception if the host and string passed is invalid" in {
-      new JedisIcicle("foibles") must throwA[InvalidServerFormatException]
+      new JedisIcicle("foibles", "1234") must throwA[InvalidServerFormatException]
     }
   }
 
   "#loadLuaScript" should {
     "call to redis to load the script" in new Context {
-      underTest.loadLuaScript(luaScript)
+      underTest.loadLuaScript(luaScript, 1)
 
-      there was one(jedis).scriptLoad(luaScript)
+      there was one(jedis).scriptLoad(luaScript, "{1}")
     }
 
     "returns the SHA returned by the call to Redis" in new Context {
-      jedis.scriptLoad(luaScript) returns sha
+      jedis.scriptLoad(luaScript, "{1}") returns sha
 
-      underTest.loadLuaScript(luaScript) must_== sha
+      underTest.loadLuaScript(luaScript, 1) must_== sha
     }
 
     "returns the resource if the call was successful" in new Context {
-      underTest.loadLuaScript("foo")
+      underTest.loadLuaScript("foo", 1)
 
-      there was one(jedis).close()
-    }
-
-    "returns the resource if the call threw an exception" in new Context {
-      jedis.scriptLoad(luaScript) throws new RuntimeException
-
-      try {
-        underTest.loadLuaScript(luaScript)
-      } catch {
-        case e: RuntimeException => null
-      }
-
-      there was one(jedis).close()
+      there was one(jedis).scriptLoad("foo", "{1}")
     }
 
     "rethrows any exception the call throws" in new Context {
       val testScript = "foo"
-      jedis.scriptLoad(testScript) throws new RuntimeException
+      jedis.scriptLoad(testScript, "{1}") throws new RuntimeException
 
-      underTest.loadLuaScript(testScript) must throwA[RuntimeException]
+      underTest.loadLuaScript(testScript, 1) must throwA[RuntimeException]
     }
   }
 
   "#evalLuaScript" should {
     val args = util.Arrays.asList("foo")
+    val keys = util.Arrays.asList("bar")
+    val keysAndArgs = util.Arrays.asList("foo", "bar")
     val response: java.util.List[java.lang.Long] = util.Arrays.asList(12L, 34L, 56L, 78L, 1L)
+    val argsAsArray: Array[String] = keysAndArgs.toArray(Array[String]())
 
     "call to redis to eval the script with the given args" in new Context {
-      val argsAsArray: Array[String] = args.toArray(Array[String]())
 
-      jedis.evalsha(any, any, anyString) returns response
+      jedis.evalsha(any, any[util.List[String]], any[util.List[String]]) returns response
 
-      underTest.evalLuaScript(sha, args)
+      underTest.evalLuaScript(sha, keys, args)
 
-      there was one(jedis).evalsha(sha, args.size(), argsAsArray:_*)
+      there was one(jedis).evalsha(sha, keys, args)
     }
 
     "returns the response returned by the call to Redis wrapped up as an IcicleRedisResponse" in new Context {
-      jedis.evalsha(any, any, anyString) returns response
+      jedis.evalsha(any, any[util.List[String]], any[util.List[String]]) returns response
 
-      underTest.evalLuaScript(sha, args) must_== Optional.of(new IcicleRedisResponse(response))
+      underTest.evalLuaScript(sha, keys, args) must_== Optional.of(new IcicleRedisResponse(response))
     }
 
     "returns absent when a JedisDataException is thrown" in new Context {
-      jedis.evalsha(any, any, anyString) throws new JedisDataException("foo", new Throwable)
+      jedis.evalsha(any, any[util.List[String]], any[util.List[String]]) throws new JedisDataException("foo", new Throwable)
 
-      underTest.evalLuaScript(sha, args).isPresent must beFalse
-    }
-
-    "returns the resource if the call was successful" in new Context {
-      jedis.evalsha(any, any, anyString) returns response
-
-      underTest.evalLuaScript(sha, args)
-
-      there was one(jedis).close()
-    }
-
-    "returns the resource if the call threw an exception" in new Context {
-      jedis.evalsha(any, any, anyString) throws new RuntimeException
-
-      try {
-        underTest.evalLuaScript(sha, args)
-      } catch {
-        case e: RuntimeException => null
-      }
-
-      there was one(jedis).close()
+      underTest.evalLuaScript(sha, keys, args).isPresent must beFalse
     }
 
     "rethrows any exception the call throws" in new Context {
       val testScript = "foo"
-      jedis.scriptLoad(testScript) throws new RuntimeException
+      jedis.scriptLoad(testScript, "{1}") throws new RuntimeException
 
-      underTest.loadLuaScript(testScript) must throwA[RuntimeException]
+      underTest.loadLuaScript(testScript, 1) must throwA[RuntimeException]
     }
   }
 
   trait Context extends Scope with Mockito with ThrownExpectations {
-    val jedisPool = mock[JedisPool]
-    val underTest = new JedisIcicle(jedisPool)
-    val jedis = mock[Jedis]
-
-    jedisPool.getResource returns jedis
+    val jedis = mock[JedisCluster]
+    val underTest = new JedisIcicle(jedis)
   }
 }
