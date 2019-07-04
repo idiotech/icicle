@@ -1,11 +1,9 @@
-local lock_key = 'icicle-generator-lock'
-local sequence_key = 'icicle-generator-sequence'
-local logical_shard_id_key = 'icicle-generator-logical-shard-id'
+local max_sequence = tonumber(ARGV[3])
+local num_ids = tonumber(ARGV[2])
+local logical_shard_id = tonumber(ARGV[1]) + 1
 
-local max_sequence = tonumber(KEYS[1])
-local min_logical_shard_id = tonumber(KEYS[2])
-local max_logical_shard_id = tonumber(KEYS[3])
-local num_ids = tonumber(KEYS[4])
+local lock_key = KEYS[1]
+local sequence_key = KEYS[2]
 
 if redis.call('EXISTS', lock_key) == 1 then
   redis.log(redis.LOG_NOTICE, 'Icicle: Cannot generate ID, waiting for lock to expire.')
@@ -17,7 +15,6 @@ Increment by a set number, this can
 --]]
 local end_sequence = redis.call('INCRBY', sequence_key, num_ids)
 local start_sequence = end_sequence - num_ids + 1
-local logical_shard_id = tonumber(redis.call('GET', logical_shard_id_key)) or -1
 
 if end_sequence >= max_sequence then
   --[[

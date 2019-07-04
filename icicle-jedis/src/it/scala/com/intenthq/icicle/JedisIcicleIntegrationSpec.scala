@@ -9,7 +9,7 @@ object JedisIcicleIntegrationSpec extends Specification {
   "constructor" should {
     "sets the correct host and port if a valid host and port is passed" in {
       val underTest = new JedisIcicle("localhost:6379")
-      val jedis = underTest.getJedisPool.getResource
+      val jedis = underTest.getJedisCluster.getResource
 
       try {
         (jedis.getClient.getHost must_== "localhost") and
@@ -24,7 +24,7 @@ object JedisIcicleIntegrationSpec extends Specification {
     val jedisIcicle = new JedisIcicle("localhost:6379")
     val roundRobinRedisPool = new RoundRobinRedisPool(util.Arrays.asList(jedisIcicle))
     val idGenerator = new IcicleIdGenerator(roundRobinRedisPool)
-    val jedis = jedisIcicle.getJedisPool.getResource
+    val jedis = jedisIcicle.getJedisCluster.getResource
     try {
       jedis.set(logicalShardIdRedisKey, "1")
       jedis.del(sequenceRedisKey)

@@ -5,7 +5,6 @@ import com.intenthq.icicle.exception.InvalidLogicalShardIdException;
 import com.intenthq.icicle.exception.LuaScriptFailedToLoadException;
 import com.intenthq.icicle.redis.IcicleRedisResponse;
 import com.intenthq.icicle.redis.Redis;
-import com.intenthq.icicle.redis.RoundRobinRedisPool;
 import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.slf4j.Logger;
@@ -63,10 +62,11 @@ public class IcicleIdGenerator {
   private static final long ONE_SECOND_IN_MILLIS = TimeUnit.MILLISECONDS.convert(1, TimeUnit.SECONDS);
   private static final long ONE_MILLI_IN_MICRO_SECS = TimeUnit.MICROSECONDS.convert(1, TimeUnit.MILLISECONDS);
 
-  private final RoundRobinRedisPool roundRobinRedisPool;
+  private final Redis redis;
+  private final int partitions;
+  private int currentPartition = 0;
   private final int maximumAttempts;
   private final long customEpoch;
-
   private final String luaScript;
   private final String luaScriptSha;
 
@@ -77,10 +77,10 @@ public class IcicleIdGenerator {
    * Note that this constructor means that if a failure occurs, we will attempt to retry generating the ID up to 5
    * times.
    *
-   * @param roundRobinRedisPool The pool of Redis servers to use for ID generation.
+   * @param redis The pool of Redis cluster to use for ID generation.
    */
-  public IcicleIdGenerator(final RoundRobinRedisPool roundRobinRedisPool) {
-    this(roundRobinRedisPool, DEFAULT_MAX_ATTEMPTS, DEFAULT_CUSTOM_EPOCH);
+  public IcicleIdGenerator(final Redis redis, final int partitions) {
+    this(redis, partitions, DEFAULT_MAX_ATTEMPTS, DEFAULT_CUSTOM_EPOCH);
   }
 
   /**
@@ -90,11 +90,11 @@ public class IcicleIdGenerator {
    * Note that this constructor means that if a failure occurs, we will attempt to retry generating the ID up to the
    * number of `maximumAttempts` specified. Specify 1 to try only once.
    *
-   * @param roundRobinRedisPool The pool of Redis servers to use for ID generation.
+   * @param redis The Redis cluster to use for ID generation.
    * @param maximumAttempts The number of times to attempt ID generation in the case of failures.
    */
-  public IcicleIdGenerator(final RoundRobinRedisPool roundRobinRedisPool, final int maximumAttempts) {
-    this(roundRobinRedisPool, maximumAttempts, DEFAULT_CUSTOM_EPOCH);
+  public IcicleIdGenerator(final Redis redis, final int partitions, final int maximumAttempts) {
+    this(redis, partitions, maximumAttempts, DEFAULT_CUSTOM_EPOCH);
   }
 
 
@@ -105,15 +105,16 @@ public class IcicleIdGenerator {
    * Note that this constructor means that if a failure occurs, we will attempt to retry generating the ID up to the
    * number of `maximumAttempts` specified. Specify 1 to try only once.
    *
-   * @param roundRobinRedisPool The pool of Redis servers to use for ID generation.
+   * @param redis The Redis cluster to use for ID generation.
    * @param maximumAttempts The number of times to attempt ID generation in the case of failures.
    * @param customEpoch A UNIX timestamp *in milliseconds*, used to compress the times inside IDs into 41-bits. It is
    *                    very important that this timestamp be chosen carefully. It must be set to a time which proceeds
    *                    any date at which you will be generating IDs. ALso, never change this epoch after beginning to
    *                    generate IDs, or you risk collisions later down the road.
    */
-  public IcicleIdGenerator(final RoundRobinRedisPool roundRobinRedisPool, final int maximumAttempts, final long customEpoch) {
-    this.roundRobinRedisPool = roundRobinRedisPool;
+  public IcicleIdGenerator(final Redis redis, final int partitions, final int maximumAttempts, final long customEpoch) {
+    this.redis = redis;
+    this.partitions = partitions;
     this.maximumAttempts = maximumAttempts;
     this.customEpoch = customEpoch;
 
@@ -167,7 +168,7 @@ public class IcicleIdGenerator {
 
      for (int retries = 0; retries < maximumAttempts; retries++) {
       try {
-        Optional<List<Id>> result = generateIdsUsingRedis(roundRobinRedisPool.getNextRedis(), batchSize);
+        Optional<List<Id>> result = generateIdsUsingRedis(redis, batchSize);
 
         // We'll retry if the ID didn't generate for whatever reason.
         if (result.isPresent()) {
@@ -256,7 +257,8 @@ public class IcicleIdGenerator {
    * @return The result of executing the Lua script.
    */
   private Optional<IcicleRedisResponse> executeOrLoadLuaScript(final Redis redis, final long batchSize) {
-    Optional<IcicleRedisResponse> response = executeLuaScript(redis, batchSize);
+    int partition = currentPartition;
+    Optional<IcicleRedisResponse> response = executeLuaScript(redis, partition, batchSize);
 
     // Great! The script was already loaded and ran, so we saved a call.
     if (response.isPresent()) {
@@ -264,8 +266,9 @@ public class IcicleIdGenerator {
     }
 
     // Otherwise we need to load and try again, failing if it doesn't work the second time.
-    redis.loadLuaScript(luaScript);
-    return executeLuaScript(redis, batchSize);
+    redis.loadLuaScript(luaScript, partition);
+    currentPartition = (currentPartition + 1) % partitions;
+    return executeLuaScript(redis, partition, batchSize);
   }
 
   /**
@@ -276,12 +279,17 @@ public class IcicleIdGenerator {
    * @return The optional result of executing the Lua script. Absent if the Lua script referenced by the SHA was missing
    * when it was attempted to be executed.
    */
-  private Optional<IcicleRedisResponse> executeLuaScript(final Redis redis, final long batchSize) {
-    List<String> args = Arrays.asList(String.valueOf(MAX_SEQUENCE),
-                                      String.valueOf(MIN_LOGICAL_SHARD_ID),
-                                      String.valueOf(MAX_LOGICAL_SHARD_ID),
-                                      String.valueOf(batchSize));
-    return redis.evalLuaScript(luaScriptSha, args);
+  private Optional<IcicleRedisResponse> executeLuaScript(final Redis redis, final int partition, final long batchSize) {
+    List<String> keys = Arrays.asList(
+            "{" + partition + "}icicle-generator-lock",
+            "{" + partition + "}icicle-generator-sequence"
+    );
+    List<String> args = Arrays.asList(
+            String.valueOf(partition),
+            String.valueOf(batchSize),
+            String.valueOf(MAX_SEQUENCE)
+    );
+    return redis.evalLuaScript(luaScriptSha, keys, args);
   }
 
   /**

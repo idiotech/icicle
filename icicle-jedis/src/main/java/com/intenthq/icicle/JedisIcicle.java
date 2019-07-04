@@ -3,14 +3,13 @@ package com.intenthq.icicle;
 import com.intenthq.icicle.redis.Redis;
 import com.intenthq.icicle.redis.IcicleRedisResponse;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.function.Function;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
+import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.JedisCluster;
 import redis.clients.jedis.exceptions.JedisDataException;
 
 /**
@@ -19,24 +18,32 @@ import redis.clients.jedis.exceptions.JedisDataException;
 public class JedisIcicle implements Redis {
   private static final Pattern SERVER_FORMAT = Pattern.compile("^([^:]+):([0-9]+)$");
 
-  private final JedisPool jedisPool;
+  private final JedisCluster jedisCluster;
+
 
   /**
    * Create an instance of JedisIcicle from a host and port string of the format "server:port".
    *
    * @param hostAndPort A host and port string for a Redis instance to use for ID generation, of the format "host:port".
    */
-  public JedisIcicle(final String hostAndPort) {
-    this.jedisPool = jedisPoolFromServerAndPort(hostAndPort);
+  public JedisIcicle(final String hostAndPort, final String password) {
+    this.jedisCluster = jedisClusterFromServerAndPort(hostAndPort, password);
   }
 
+  public JedisIcicle(final String hosts, final int port, final String password) {
+    HashSet<HostAndPort> nodeSet = new HashSet<>();
+    for (String host: hosts.split(",")) {
+      nodeSet.add(new HostAndPort(host, port));
+    }
+    this.jedisCluster = getAuthed(nodeSet, password);
+  }
   /**
    * Create an instance of JedisIcicle from an existing JedisPool instance.
    *
-   * @param jedisPool An existing JedisPool instance you have configured that can be used for the ID generation.
+   * @param jedisCluster An existing JedisPool instance you have configured that can be used for the ID generation.
    */
-  public JedisIcicle(final JedisPool jedisPool) {
-    this.jedisPool = jedisPool;
+  public JedisIcicle(final JedisCluster jedisCluster) {
+    this.jedisCluster = jedisCluster;
   }
 
   /**
@@ -44,8 +51,8 @@ public class JedisIcicle implements Redis {
    *
    * @return The instance of JedisPool that was either passed or created from the host and port given.
    */
-  public JedisPool getJedisPool() {
-    return jedisPool;
+  public JedisCluster getJedisCluster() {
+    return jedisCluster;
   }
 
   /**
@@ -55,8 +62,8 @@ public class JedisIcicle implements Redis {
    * @return The SHA of the loaded Lua script.
    */
   @Override
-  public String loadLuaScript(final String luaScript) {
-    return withJedis(jedis -> jedis.scriptLoad(luaScript));
+  public String loadLuaScript(final String luaScript, int partition) {
+    return jedisCluster.scriptLoad(luaScript, "{" + partition + "}");
   }
 
   /**
@@ -68,18 +75,14 @@ public class JedisIcicle implements Redis {
    * when it was attempted to be executed.
    */
   @Override
-  public Optional<IcicleRedisResponse> evalLuaScript(final String luaScriptSha, final List<String> arguments) {
-    return withJedis(jedis -> {
-      String[] args = arguments.toArray(new String[arguments.size()]);
-
-      try {
-        @SuppressWarnings("unchecked")
-        List<Long> results = (List<Long>) jedis.evalsha(luaScriptSha, arguments.size(), args);
-        return Optional.of(new IcicleRedisResponse(results));
-      } catch (JedisDataException e) {
-        return Optional.empty();
-      }
-    });
+  public Optional<IcicleRedisResponse> evalLuaScript(final String luaScriptSha, final List<String> keys, final List<String> arguments) {
+    try {
+      @SuppressWarnings("unchecked")
+      List<Long> results = (List<Long>) jedisCluster.evalsha(luaScriptSha, keys, arguments);
+      return Optional.of(new IcicleRedisResponse(results));
+    } catch (JedisDataException e) {
+      return Optional.empty();
+    }
   }
 
   /**
@@ -90,26 +93,31 @@ public class JedisIcicle implements Redis {
    * @return A JedisPool instance pointing at the given host and port.
    * @throws InvalidServerFormatException If the given parameter is not of the format "host:port".
    */
-  private JedisPool jedisPoolFromServerAndPort(final String hostAndPort) {
-    Matcher matcher = SERVER_FORMAT.matcher(hostAndPort);
+  private JedisCluster jedisClusterFromServerAndPort(final String hostAndPort, final String password) {
 
-    if (!matcher.matches()) {
-      throw new InvalidServerFormatException(hostAndPort);
+    List<String> nodes = Arrays.asList(hostAndPort.split(","));
+    HashSet<HostAndPort> nodeSet = new HashSet<>();
+    for (String s: nodes) {
+      Matcher matcher = SERVER_FORMAT.matcher(s);
+      if (!matcher.matches()) {
+        throw new InvalidServerFormatException(s);
+      } else {
+        nodeSet.add(new HostAndPort(matcher.group(1), Integer.valueOf(matcher.group(2))));
+      }
     }
 
-    return new JedisPool(matcher.group(1), Integer.valueOf(matcher.group(2)));
+    return getAuthed(nodeSet, password);
   }
 
-  /**
-   * Request a Jedis resource from the pool, execute the given callback passing the resource, and then ensure the
-   * resource is always returned to the pool regardless of success or failure in the callback.
-   * @param callback The callback to pass the Jedis resource to so some operation can be done with it.
-   * @param <T> The type that will be returned by the callback.
-   * @return The value returned by the callback.
-   */
-  private <T> T withJedis(final Function<Jedis, T> callback) {
-    try (Jedis jedis = jedisPool.getResource()) {
-      return callback.apply(jedis);
-    }
+  private JedisCluster getAuthed(Set<HostAndPort> nodeSet, final String password) {
+    return new JedisCluster(
+            nodeSet,
+            2000,
+            2000,
+            5,
+            password,
+            new GenericObjectPoolConfig()
+    );
+
   }
 }

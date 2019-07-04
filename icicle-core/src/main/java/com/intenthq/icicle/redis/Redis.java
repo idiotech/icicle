@@ -10,6 +10,6 @@ import java.util.Optional;
  * RoundRobinRedisPool instance.
  */
 public interface Redis {
-  String loadLuaScript(final String luaScript);
-  Optional<IcicleRedisResponse> evalLuaScript(final String luaScriptSha, final List<String> arguments);
+  String loadLuaScript(final String luaScript, int partition);
+  Optional<IcicleRedisResponse> evalLuaScript(final String luaScriptSha, final List<String> keys, final List<String> arguments);
 }
