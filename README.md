@@ -1,5 +1,6 @@
 # Icicle [![Build Status](https://travis-ci.org/intenthq/icicle.svg?branch=master)](https://travis-ci.org/intenthq/icicle) [![Join the chat at https://gitter.im/intenthq/icicle](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/intenthq/icicle)
 **A distributed, k-sortable unique ID generation system using Redis and Lua.**
+**With Redis Cluster Support!**
 
 Icicle is a project to generate 64-bit, k-sortable unique IDs in a distributed fashion by using Redis' Lua scripting.
 
