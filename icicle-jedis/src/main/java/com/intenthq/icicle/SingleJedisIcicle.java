@@ -4,7 +4,10 @@ import com.intenthq.icicle.redis.Redis;
 import com.intenthq.icicle.redis.IcicleRedisResponse;
 
 import java.util.*;
+
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.exceptions.JedisDataException;
 
 /**
@@ -12,12 +15,10 @@ import redis.clients.jedis.exceptions.JedisDataException;
  */
 public class SingleJedisIcicle implements Redis {
 
-    private final Jedis jedis;
+    private final JedisPool jedisPool;
 
-    public SingleJedisIcicle(final String host, final int port, final String password) {
-        Jedis jedis = new Jedis(host, port);
-        if (password != null) jedis.auth(password);
-        this.jedis = jedis;
+    public SingleJedisIcicle(final String host, final int port, final String password, final int timeout) {
+        jedisPool = new JedisPool(new GenericObjectPoolConfig(), host, port, timeout, password);
     }
 
     /**
@@ -28,7 +29,9 @@ public class SingleJedisIcicle implements Redis {
      */
     @Override
     public String loadLuaScript(final String luaScript, int partition) {
-        return jedis.scriptLoad(luaScript);
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.scriptLoad(luaScript);
+        }
     }
 
     /**
@@ -41,7 +44,7 @@ public class SingleJedisIcicle implements Redis {
      */
     @Override
     public Optional<IcicleRedisResponse> evalLuaScript(final String luaScriptSha, final List<String> keys, final List<String> arguments) {
-        try {
+        try (Jedis jedis = jedisPool.getResource()) {
             @SuppressWarnings("unchecked")
             List<Long> results = (List<Long>) jedis.evalsha(luaScriptSha, keys, arguments);
             return Optional.of(new IcicleRedisResponse(results));
